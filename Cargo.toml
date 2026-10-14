@@ -88,7 +88,7 @@ libc = "0.2"
 # `links = "sqlite3"` package (one bundled SQLite).
 libsqlite3-sys = ">=0.30.1, <0.38.0"
 listenfd = "1"
-locked-tripwire = "0.1"
+locked-tripwire = "=0.1.1"
 memchr = "2"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
@@ -145,7 +145,7 @@ shlex = "2"
 signal-hook = "0.3"
 sql-builder = "3"
 sqlx = { version = "0.9", features = ["runtime-tokio", "time", "uuid"] }
-strum = { version = "0.27", features = ["strum_macros"] }
+strum = { version = "0.28", features = ["derive"] }
 strum_macros = "0.28"
 sysinfo = "0.39"
 tempfile = { version = "3" }
@@ -202,6 +202,14 @@ blake2.opt-level = 3
 rusty_paseto.opt-level = 3
 rusty_paserk.opt-level = 3
 base64.opt-level = 3
+
+# Release profile with maximum cross-module optimization and stripped symbols
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]

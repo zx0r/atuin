@@ -1,5 +1,6 @@
 #[cfg(unix)]
 use std::io::Read as _;
+use std::borrow::Cow;
 use std::io::{IsTerminal, Write, stdout};
 use std::time::Duration;
 
@@ -1124,15 +1125,15 @@ impl State {
                 if self.switched_search_mode {
                     format!(
                         "S{}>",
-                        self.search_mode_state.raw_mode().as_str().chars().next().unwrap()
+                        self.search_mode_state.raw_mode().as_str().chars().next().unwrap_or('?')
                     )
                 } else if self.search.custom_context.is_some() {
-                    format!("C{}>", self.search.filter_mode.as_str().chars().next().unwrap())
+                    format!("C{}>", self.search.filter_mode.as_str().chars().next().unwrap_or('?'))
                 } else {
-                    format!("{}> ", self.search.filter_mode.as_str().chars().next().unwrap())
+                    format!("{}> ", self.search.filter_mode.as_str().chars().next().unwrap_or('?'))
                 }
             }
-            _ => " > ".to_string(),
+            _ => " ❯ ".to_string(),
         };
 
         match self.tab_index {
@@ -1221,15 +1222,6 @@ impl State {
                 theme,
                 settings.ui.syntax_highlight,
             );
-            let prefix_width = settings
-                .ui
-                .columns
-                .iter()
-                .take_while(|col| !col.expand)
-                .map(|col| col.width + 1)
-                .sum::<u16>()
-                + u16::conv(" > ".len());
-            let min_prefix_width = u16::conv("[ SRCH: FULLTXT ] ".len());
             self.draw_preview(
                 f,
                 style,
@@ -1237,13 +1229,11 @@ impl State {
                 compactness,
                 preview_chunk,
                 preview,
-                std::cmp::max(prefix_width, min_prefix_width),
                 theme,
             );
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_preview(
         &self,
         f: &mut Frame,
@@ -1252,10 +1242,9 @@ impl State {
         compactness: Compactness,
         preview_chunk: Rect,
         preview: Paragraph<'_>,
-        prefix_width: u16,
         theme: &Theme,
     ) {
-        let input = self.build_input(style, prefix_width, theme);
+        let (input, prompt_width) = self.build_input(style, theme);
         f.render_widget(input, input_chunk);
 
         f.render_widget(preview, preview_chunk);
@@ -1267,8 +1256,8 @@ impl State {
             _ => 0,
         };
         f.set_cursor_position((
-            // Put cursor past the end of the input text
-            input_chunk.x + u16::conv(extra_width) + prefix_width + cursor_offset,
+            // Put cursor past the end of the prompt and input text
+            input_chunk.x + prompt_width + u16::conv(extra_width) + cursor_offset,
             input_chunk.y + cursor_offset,
         ));
     }
@@ -1420,24 +1409,30 @@ impl State {
         }
     }
 
-    fn build_input(&self, style: StyleState, prefix_width: u16, theme: &Theme) -> Paragraph<'_> {
-        let (pref, mode) = if self.prefix {
-            ("", "PREFIX")
+    fn build_input(&self, style: StyleState, theme: &Theme) -> (Paragraph<'_>, u16) {
+        let tag = if self.prefix {
+            Cow::Borrowed("PREFIX")
         } else if self.switched_search_mode {
-            (" SRCH:", self.search_mode_state.raw_mode().as_str())
+            Cow::Owned(format!("SRCH:{}", self.search_mode_state.raw_mode().as_str()))
         } else if self.search.custom_context.is_some() {
-            (" CTX:", self.search.filter_mode.as_str())
+            Cow::Owned(format!("CTX:{}", self.search.filter_mode.as_str()))
         } else {
-            ("", self.search.filter_mode.as_str())
+            Cow::Borrowed(self.search.filter_mode.as_str())
         };
-        // 3: surrounding "[" "] "
-        let mode_width = usize::from(prefix_width) - pref.len() - 3;
-        // sanity check to ensure we don't exceed the layout limits
-        debug_assert!(mode_width >= mode.len(), "mode name '{mode}' is too long!");
+
+        let prompt_symbol = " ❯ ";
+        let prompt_width =
+            u16::conv(UnicodeWidthStr::width(tag.as_ref()) + UnicodeWidthStr::width(prompt_symbol));
+
         let input_text = Line::from(vec![
             Span::styled(
-                format!("[{pref}{mode:^mode_width$}] "),
-                Style::from_crossterm(theme.as_style(Meaning::Title)),
+                tag,
+                Style::from_crossterm(theme.as_style(Meaning::Title)).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                prompt_symbol,
+                Style::from_crossterm(theme.as_style(Meaning::Guidance))
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 self.search.input.as_str(),
@@ -1446,7 +1441,7 @@ impl State {
         ]);
         let input = Paragraph::new(input_text);
         let border_style = Style::from_crossterm(theme.as_style(Meaning::Muted));
-        match style.compactness {
+        let widget = match style.compactness {
             Compactness::Full => {
                 if style.invert {
                     input.block(
@@ -1470,7 +1465,8 @@ impl State {
                 }
             }
             _ => input,
-        }
+        };
+        (widget, prompt_width)
     }
 
     fn build_preview(

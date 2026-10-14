@@ -193,9 +193,18 @@ struct DrawState<'a> {
     columns: &'a [UiColumn],
 }
 
-// these encode the slices of `" > "`, `" {n} "`, or `"   "` in a compact form.
-// Yes, this is a hack, but it makes me feel happy
-static SLICES: &str = " > 1 2 3 4 5 6 7 8 9   ";
+const NUMERIC_SHORTCUTS: [&str; 10] = [
+    "   ",
+    " 1 ",
+    " 2 ",
+    " 3 ",
+    " 4 ",
+    " 5 ",
+    " 6 ",
+    " 7 ",
+    " 8 ",
+    " 9 ",
+];
 
 impl DrawState<'_> {
     /// Render a complete row for a history item based on configured columns.
@@ -234,30 +243,31 @@ impl DrawState<'_> {
     }
 
     fn index(&mut self) {
-        if !self.show_numeric_shortcuts {
-            let i = usize::conv(self.y) + self.state.offset;
-            let is_selected = i == self.state.selected();
-            let prompt: &str = if is_selected {
-                self.indicator
-            } else {
-                "   "
-            };
-            self.draw(prompt, Style::default());
+        let i = usize::conv(self.y) + self.state.offset;
+        let is_selected = i == self.state.selected();
+
+        if is_selected {
+            let style = Style::from_crossterm(self.theme.as_style(Meaning::Guidance))
+                .add_modifier(Modifier::BOLD);
+            self.draw(self.indicator, style);
             return;
         }
 
-        // these encode the slices of `" > "`, `" {n} "`, or `"   "` in a compact form.
-        // Yes, this is a hack, but it makes me feel happy
+        if !self.show_numeric_shortcuts {
+            self.draw("   ", Style::default());
+            return;
+        }
 
-        let i = usize::conv(self.y) + self.state.offset;
-        let i = i.checked_sub(self.state.selected);
-        let i = i.unwrap_or(10).min(10) * 2;
-        let prompt: &str = if i == 0 {
-            self.indicator
-        } else {
-            &SLICES[i..i + 3]
-        };
-        self.draw(prompt, Style::default());
+        let shortcut = i.checked_sub(self.state.selected);
+        match shortcut {
+            Some(n @ 1..=9) => {
+                let style = Style::from_crossterm(self.theme.as_style(Meaning::Annotation));
+                self.draw(NUMERIC_SHORTCUTS[n], style);
+            }
+            _ => {
+                self.draw("   ", Style::default());
+            }
+        }
     }
 
     fn duration(&mut self, h: &History, width: u16) {
