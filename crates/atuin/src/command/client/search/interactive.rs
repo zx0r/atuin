@@ -41,6 +41,7 @@ use super::history_list::{HistoryList, ListState};
 use super::inspector::Stats as InspectorStats;
 use super::inspector::bindings::Bindings;
 use super::inspector::browser::{Browser, View as InspectorView};
+use super::syntax;
 use crate::VERSION;
 use crate::command::client::search::engines;
 use crate::command::client::search::history_list::HistoryHighlighter;
@@ -1158,12 +1159,16 @@ impl State {
 
             1 => {
                 if results.is_empty() && inspecting.is_none() {
+                    let border_style = Style::from_crossterm(theme.as_style(Meaning::Muted));
                     let message = Paragraph::new("Nothing to inspect")
+                        .style(Style::from_crossterm(theme.as_style(Meaning::Base)))
                         .block(
                             Block::new()
                                 .title(Line::from(" Info ".to_string()))
                                 .title_alignment(Alignment::Center)
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
+                                .border_style(border_style)
                                 .padding(Padding::vertical(2)),
                         )
                         .alignment(Alignment::Center);
@@ -1214,6 +1219,7 @@ impl State {
                 preview_width,
                 preview_chunk.width.into(),
                 theme,
+                settings.ui.syntax_highlight,
             );
             let prefix_width = settings
                 .ui
@@ -1232,6 +1238,7 @@ impl State {
                 preview_chunk,
                 preview,
                 std::cmp::max(prefix_width, min_prefix_width),
+                theme,
             );
         }
     }
@@ -1244,10 +1251,11 @@ impl State {
         input_chunk: Rect,
         compactness: Compactness,
         preview_chunk: Rect,
-        preview: Paragraph,
+        preview: Paragraph<'_>,
         prefix_width: u16,
+        theme: &Theme,
     ) {
-        let input = self.build_input(style, prefix_width);
+        let input = self.build_input(style, prefix_width, theme);
         f.render_widget(input, input_chunk);
 
         f.render_widget(preview, preview_chunk);
@@ -1384,20 +1392,27 @@ impl State {
             columns,
         );
 
+        let border_style = Style::from_crossterm(theme.as_style(Meaning::Muted));
         match style.compactness {
             Compactness::Full => {
                 if style.invert {
+                    let title_line = Line::from(Span::styled(
+                        format!("{:─>width$}", "", width = style.inner_width.saturating_sub(2)),
+                        border_style,
+                    ));
                     results_list.block(
                         Block::default()
                             .borders(Borders::LEFT | Borders::RIGHT)
                             .border_type(BorderType::Rounded)
-                            .title(format!("{:─>width$}", "", width = style.inner_width - 2)),
+                            .border_style(border_style)
+                            .title(title_line),
                     )
                 } else {
                     results_list.block(
                         Block::default()
                             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                            .border_type(BorderType::Rounded),
+                            .border_type(BorderType::Rounded)
+                            .border_style(border_style),
                     )
                 }
             }
@@ -1405,7 +1420,7 @@ impl State {
         }
     }
 
-    fn build_input(&self, style: StyleState, prefix_width: u16) -> Paragraph<'_> {
+    fn build_input(&self, style: StyleState, prefix_width: u16, theme: &Theme) -> Paragraph<'_> {
         let (pref, mode) = if self.prefix {
             ("", "PREFIX")
         } else if self.switched_search_mode {
@@ -1419,22 +1434,38 @@ impl State {
         let mode_width = usize::from(prefix_width) - pref.len() - 3;
         // sanity check to ensure we don't exceed the layout limits
         debug_assert!(mode_width >= mode.len(), "mode name '{mode}' is too long!");
-        let input = format!("[{pref}{mode:^mode_width$}] {}", self.search.input.as_str());
-        let input = Paragraph::new(input);
+        let input_text = Line::from(vec![
+            Span::styled(
+                format!("[{pref}{mode:^mode_width$}] "),
+                Style::from_crossterm(theme.as_style(Meaning::Title)),
+            ),
+            Span::styled(
+                self.search.input.as_str(),
+                Style::from_crossterm(theme.as_style(Meaning::Base)),
+            ),
+        ]);
+        let input = Paragraph::new(input_text);
+        let border_style = Style::from_crossterm(theme.as_style(Meaning::Muted));
         match style.compactness {
             Compactness::Full => {
                 if style.invert {
                     input.block(
                         Block::default()
                             .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP)
-                            .border_type(BorderType::Rounded),
+                            .border_type(BorderType::Rounded)
+                            .border_style(border_style),
                     )
                 } else {
+                    let title_line = Line::from(Span::styled(
+                        format!("{:─>width$}", "", width = style.inner_width.saturating_sub(2)),
+                        border_style,
+                    ));
                     input.block(
                         Block::default()
                             .borders(Borders::LEFT | Borders::RIGHT)
                             .border_type(BorderType::Rounded)
-                            .title(format!("{:─>width$}", "", width = style.inner_width - 2)),
+                            .border_style(border_style)
+                            .title(title_line),
                     )
                 }
             }
@@ -1449,44 +1480,95 @@ impl State {
         preview_width: u16,
         chunk_width: usize,
         theme: &Theme,
-    ) -> Paragraph<'_> {
+        syntax_highlight: bool,
+    ) -> Paragraph<'static> {
         let selected = self.results_state.selected();
-        let command = if results.is_empty() {
-            String::new()
+        let (lines, shell) = if results.is_empty() {
+            (Vec::new(), None)
         } else {
             let s = &results[selected].command;
+            let shell = results[selected].shell.as_deref();
             let mut lines = Vec::new();
-            for line in s.split('\n') {
-                let line = line.escape_non_printable();
+            for raw_line in s.split('\n') {
+                let escaped = raw_line.escape_non_printable();
                 let mut width = 0;
                 let mut start = 0;
-                for (idx, ch) in line.char_indices() {
+                for (idx, ch) in escaped.char_indices() {
                     let w = ch.width().unwrap_or(0); // None for control chars which should not happen
                     if width + w > preview_width.into() {
-                        lines.push(line[start..idx].to_owned());
+                        lines.push(escaped[start..idx].to_owned());
                         start = idx;
                         width = w;
                     } else {
                         width += w;
                     }
                 }
-                if width != 0 {
-                    lines.push(line[start..].to_owned());
+                if width != 0 || start < escaped.len() {
+                    lines.push(escaped[start..].to_owned());
                 }
             }
-            lines.join("\n")
+            (lines, shell)
         };
 
+        let text_lines: Vec<Line<'static>> = lines
+            .into_iter()
+            .map(|line| highlight_line(line, shell, theme, syntax_highlight))
+            .collect();
+
+        let border_style = Style::from_crossterm(theme.as_style(Meaning::Muted));
+        let title_line = Line::from(Span::styled(
+            format!("{:─>width$}", "", width = chunk_width.saturating_sub(2)),
+            border_style,
+        ));
+
         match compactness {
-            Compactness::Full => Paragraph::new(command).block(
+            Compactness::Full => Paragraph::new(text_lines).block(
                 Block::default()
                     .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
                     .border_type(BorderType::Rounded)
-                    .title(format!("{:─>width$}", "", width = chunk_width - 2)),
+                    .border_style(border_style)
+                    .title(title_line),
             ),
-            _ => Paragraph::new(command)
+            _ => Paragraph::new(text_lines)
                 .style(Style::from_crossterm(theme.as_style(Meaning::Annotation))),
         }
+    }
+}
+
+fn highlight_line(
+    line: String,
+    shell: Option<&str>,
+    theme: &Theme,
+    syntax_highlight: bool,
+) -> Line<'static> {
+    if !syntax_highlight {
+        return Line::from(Span::styled(
+            line,
+            Style::from_crossterm(theme.as_style(Meaning::Base)),
+        ));
+    }
+    let syntax = syntax::classify(&line, shell);
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let meaning = syntax.get(i).copied().unwrap_or(Meaning::Base);
+        let start = i;
+        while i < bytes.len() && syntax.get(i).copied().unwrap_or(Meaning::Base) == meaning {
+            i += 1;
+        }
+        spans.push(Span::styled(
+            line[start..i].to_string(),
+            Style::from_crossterm(theme.as_style(meaning)),
+        ));
+    }
+    if spans.is_empty() {
+        Line::from(Span::styled(
+            line,
+            Style::from_crossterm(theme.as_style(Meaning::Base)),
+        ))
+    } else {
+        Line::from(spans)
     }
 }
 
