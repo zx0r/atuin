@@ -272,7 +272,7 @@ impl DrawState<'_> {
 
     fn duration(&mut self, h: &History, width: u16) {
         let style = self.theme.as_style(if h.success() {
-            Meaning::AlertInfo
+            Meaning::Annotation
         } else {
             Meaning::AlertError
         });
@@ -290,13 +290,13 @@ impl DrawState<'_> {
     }
 
     fn time(&mut self, h: &History, width: u16) {
-        let style = self.theme.as_style(Meaning::Guidance);
+        let style = self.theme.as_style(Meaning::Title);
 
         let time = (self.now)().saturating_duration_since(h.timestamp).display().largest_unit();
 
-        // Format as "Xs ago" right-aligned within column width
+        // Format as relative time without "ago" (e.g. "5m", "2h", "1d")
         let w = usize::conv(width);
-        let time_str = format!("{time} ago");
+        let time_str = format!("{time}");
 
         let display = time_str.pad_ellipsize(
             Measure::Columns(w),
