@@ -1133,7 +1133,7 @@ impl State {
                     format!("{}> ", self.search.filter_mode.as_str().chars().next().unwrap_or('?'))
                 }
             }
-            _ => " ❯ ".to_string(),
+            _ => " > ".to_string(),
         };
 
         match self.tab_index {

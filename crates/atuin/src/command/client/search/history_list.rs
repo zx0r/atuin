@@ -294,9 +294,9 @@ impl DrawState<'_> {
 
         let time = (self.now)().saturating_duration_since(h.timestamp).display().largest_unit();
 
-        // Format as relative time without "ago" (e.g. "5m", "2h", "1d")
+        // Format as approximate relative time (e.g. "~5m", "~2h", "~1d")
         let w = usize::conv(width);
-        let time_str = format!("{time}");
+        let time_str = format!("~{time}");
 
         let display = time_str.pad_ellipsize(
             Measure::Columns(w),
